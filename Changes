@@ -1,5 +1,8 @@
 Revision history for Catalyst-Plugin-Session-Store-Couchbase
 
+0.92    21 Feb 2013
+        Add missing dependencies to Makefile
+
 0.91    20 Feb 2013
         Initial open-source version released to CPAN
 
