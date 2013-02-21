@@ -123,7 +123,9 @@ Toby Corkindale, C<< <tjc at wintrmute.net> >>
 
 =head1 BUGS
 
-Please report any bugs to the Github repo for this module.
+Please report any bugs to the Github repo for this module:
+
+https://github.com/TJC/Catalyst-Plugin-Session-Store-Couchbase
 
 =head1 SUPPORT
 
