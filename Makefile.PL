@@ -6,7 +6,10 @@ author   q{Toby Corkindale <tjc@wintrmute.net>};
 license  'perl';
 
 build_requires 'Test::More';
-build_requires 'Catalyst::Plugin::Session' => 0.27;
+requires 'Catalyst::Plugin::Session' => 0.27;
+requires 'Couchbase::Client' => 1.00;
+requires 'Moose';
+requires 'Catalyst::ClassData';
 
 auto_install;
 
