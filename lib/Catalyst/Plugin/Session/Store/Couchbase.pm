@@ -87,7 +87,7 @@ sub store_session_data {
     my ($c, $key, $data) = @_;
     croak("No cache key specified") unless length($key);
     $key = $c->_session_couchbase_prefix . $key;
-    my $expiry = $c->session_expires;
+    my $expiry = $c->session_expires ? $c->session_expires - time() : 0;
     if (not $expiry) {
         $c->log->warn("No expiry set for sessions! Defaulting to one hour..");
         $expiry = 3600;
