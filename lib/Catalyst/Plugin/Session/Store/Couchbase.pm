@@ -8,7 +8,7 @@ use Couchbase::Client 1.00;
 use namespace::clean -except => 'meta'; # The last bit cargo culted.
 use Storable qw(nfreeze thaw);
 
-our $VERSION = '0.93';
+our $VERSION = '0.94';
 
 __PACKAGE__->mk_classdata('_session_couchbase_handle');
 __PACKAGE__->mk_classdata('_session_couchbase_prefix');
@@ -172,7 +172,6 @@ See http://dev.perl.org/licenses/ for more information.
 
 
 =cut
-
 
 __PACKAGE__->meta->make_immutable;
 1;
