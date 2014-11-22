@@ -4,13 +4,15 @@ use MRO::Compat;
 extends 'Catalyst::Plugin::Session::Store';
 with 'Catalyst::ClassData';
 use Catalyst::Exception;
-use Couchbase::Client 1.00;
+use Couchbase::Bucket;
+use Couchbase::Document;
 use namespace::clean -except => 'meta'; # The last bit cargo culted.
 use Storable qw(nfreeze thaw);
+use URI::Escape qw(uri_escape);
 
-our $VERSION = '0.93';
+our $VERSION = '0.94';
 
-__PACKAGE__->mk_classdata('_session_couchbase_handle');
+__PACKAGE__->mk_classdata('_session_cb_bucket_handle');
 __PACKAGE__->mk_classdata('_session_couchbase_prefix');
 
 =head1 NAME
@@ -26,11 +28,48 @@ Catalyst::Plugin::Session::Store::Couchbase
     },
     Couchbase => {
       server => 'couchbase01.domain',
-      username => 'Administrator',
       password => 'password',
       bucket => 'default',
+      ssl => 1,
+      certpath => '/example/certpath/cert.pem',
     }
   );
+
+=head1 CONFIG OPTIONS
+
+=over 4
+
+=item server
+
+The Couchbase server to connect to. If there are multiple nodes in a cluster,
+multiple servers can be provided as a comma-delimited list (ex: host1,host2),
+which can improve reliability if the primary connection node is down. If the
+cluster is responding on a different port, it may be provided as host:port,
+where port is the memcached listening port.
+
+=item password
+
+Password for the given bucket. This can be omitted if a password is not set on
+the given bucket.
+
+=item bucket
+
+Bucket name to connect to. Defaults to "default" if it is not provided.
+
+=item ssl
+
+Set to 1 if the cluster is SSL-enabled and a SSL connection is desired. SSL
+support requires Couchbase Server 2.5 or higher and a copy of the server's
+SSL certificate. Defaults to off.
+
+=item certpath
+
+Path to the server's SSL pem-encoded certificate for validation. Not required if
+SSL is disabled.
+
+=item timeout
+
+Timeout (in seconds) to allow for bootstrapping a client. Defaults to 6.
 
 =cut
 
@@ -45,40 +84,32 @@ sub setup_session {
     my $appname = "$c";
     $c->_session_couchbase_prefix($appname . "sess:");
 
-    my $cb = Couchbase::Client->new({
-        server => $cfg->{server},
-        username => $cfg->{username},
-        password => $cfg->{password},
-        bucket => $cfg->{bucket},
-        compress_threshold => 25_000,
-        timeout => 6.0,
-    });
-    Catalyst::Exception->throw("Couchbase client undefined!")
-        unless defined $cb;
+    my $connection_url = _build_couchbase_url($cfg);
+    my $bucket = Couchbase::Bucket->new($connection_url);
+    Catalyst::Exception->throw("Couchbase bucket object undefined!")
+        unless defined $bucket;
 
-    if (my @errs = @{$cb->get_errors}) {
-        Catalyst::Exception->throw(
-            "Couchbase client errors:\n"
-             . join("\n", map { $_->[1] } @errs)
-         );
-    }
-    $c->_session_couchbase_handle($cb);
-    1;
+    $c->_session_cb_bucket_handle($bucket);
+
+    return 1;
 }
 
 sub get_session_data {
     my ($c, $key) = @_;
     croak("No cache key specified") unless length($key);
-    $key = $c->_session_couchbase_prefix . $key;
-    my $r = $c->_session_couchbase_handle->get($key);
-    if (defined $r and defined $r->value) {
-        return $r->value;
+    my ( $type, $id ) = split( ':', $key );
+
+    $key = $c->_session_couchbase_prefix . $id;
+    my $doc = Couchbase::Document->new($key);
+    $c->_session_cb_bucket_handle->get_and_touch($doc);
+    if (defined $doc and $doc->is_ok and defined $doc->value) {
+        return $doc->value->{$type};
     }
-    elsif (defined $r) {
-        my $err = $r->errstr;
+    elsif (defined $doc) {
+        my $err = $doc->errstr;
         Catalyst::Exception->throw(
             "Failed to fetch Couchbase item: $err. Key was: $key"
-        ) unless $err =~ /No such key/;
+        ) unless $err =~ /key does not exist/;
     }
     return;
 }
@@ -86,19 +117,25 @@ sub get_session_data {
 sub store_session_data {
     my ($c, $key, $data) = @_;
     croak("No cache key specified") unless length($key);
-    $key = $c->_session_couchbase_prefix . $key;
+    my ( $type, $id ) = split( ':', $key );
+
+    $key = $c->_session_couchbase_prefix . $id;
     my $expiry = $c->session_expires ? $c->session_expires - time() : 0;
     if (not $expiry) {
         $c->log->warn("No expiry set for sessions! Defaulting to one hour..");
         $expiry = 3600;
     }
-    my $r = $c->_session_couchbase_handle->set(
-        $key => $data,
-        int($expiry) # required due to outstanding bug in XS client code
-    );
-    unless (defined $r and $r->is_ok) {
+    my $doc = Couchbase::Document->new($key);
+    $c->_session_cb_bucket_handle->get($doc);
+    unless ($doc->is_ok) {
+        $doc = Couchbase::Document->new( $key, {} );
+    }
+    $doc->value->{$type} = $data;
+    $doc->expiry($expiry);
+    $c->_session_cb_bucket_handle->upsert($doc);
+    unless ($doc->is_ok) {
         Catalyst::Exception->throw(
-            "Couldn't save $key / $data in couchbase storage: " . $r->errstr
+            "Couldn't save $key / $data in couchbase storage: " . $doc->errstr
         );
     }
     return 1;
@@ -108,15 +145,54 @@ sub delete_session_data {
     my ($c, $key) = @_;
     $c->log->debug("Couchbase session store: delete_session_data($key)") if $c->debug;
     croak("No cache key specified") unless length($key);
-    $key = $c->_session_couchbase_prefix . $key;
-    $c->_session_couchbase_handle->remove($key);
-    # Couchbase::Client API doesn't current specify what return codes apply to
-    # this operation, so ignore 'em..
-    return;
+    my ( $type, $id ) = split( ':', $key );
+
+    $key = $c->_session_couchbase_prefix . $id;
+
+    my $doc = Couchbase::Document->new($key);
+    $c->_session_cb_bucket_handle->remove($doc);
+    return 1;
 }
 
 # Not required as Couchbase expires things itself.
 sub delete_expired_sessions { }
+
+# Build a Couchbase connection string
+sub _build_couchbase_url {
+    my ($cfg) = @_;
+
+    # Set timeout to 6 seconds
+    my %options = (
+        config_node_timeout => ( $cfg->{timeout} or 6 ) * 1_000_000,
+    );
+
+    # Connection URL is couchbases?://host1,host2/bucket?options
+    my $connection_url = join('/',
+        ':/',
+        $cfg->{server},
+        ( $cfg->{bucket} or 'default' ),
+    );
+
+    $options{password} = $cfg->{password} if ($cfg->{password});
+
+    if ($cfg->{ssl}) {
+        if (not $cfg->{certpath} or not -e $cfg->{certpath}) {
+            Catalyst::Exception->throw(
+                'SSL enabled, but certpath is missing or invalid'
+            );
+        }
+        $connection_url = 'couchbases' . $connection_url;
+        $options{certpath} = $cfg->{certpath};
+    } else {
+        $connection_url = 'couchbase' . $connection_url;
+    }
+
+    $connection_url .= '?' . join(
+        '&', ( map { $_ . '=' . uri_escape($options{$_}) } keys %options )
+    );
+
+    return $connection_url;
+}
 
 =head1 AUTHOR
 

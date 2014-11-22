@@ -16,5 +16,6 @@ MANIFEST			This list of files
 META.yml
 README.md
 t/00-load.t
+t/couchbase.t
 t/manifest.t
 t/pod.t
