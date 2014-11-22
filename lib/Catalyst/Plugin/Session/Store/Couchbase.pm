@@ -97,12 +97,13 @@ sub setup_session {
 sub get_session_data {
     my ($c, $key) = @_;
     croak("No cache key specified") unless length($key);
+    my ( $type, $id ) = split( ':', $key );
 
-    $key = $c->_session_couchbase_prefix . $key;
+    $key = $c->_session_couchbase_prefix . $id;
     my $doc = Couchbase::Document->new($key);
     $c->_session_cb_bucket_handle->get_and_touch($doc);
     if (defined $doc and $doc->is_ok and defined $doc->value) {
-        return $doc->value;
+        return $doc->value->{$type};
     }
     elsif (defined $doc) {
         my $err = $doc->errstr;
@@ -116,18 +117,21 @@ sub get_session_data {
 sub store_session_data {
     my ($c, $key, $data) = @_;
     croak("No cache key specified") unless length($key);
+    my ( $type, $id ) = split( ':', $key );
 
-    $key = $c->_session_couchbase_prefix . $key;
+    $key = $c->_session_couchbase_prefix . $id;
     my $expiry = $c->session_expires ? $c->session_expires - time() : 0;
     if (not $expiry) {
         $c->log->warn("No expiry set for sessions! Defaulting to one hour..");
         $expiry = 3600;
     }
-    my $doc = Couchbase::Document->new(
-        $key,
-        $data,
-        { expiry => int($expiry) }
-    );
+    my $doc = Couchbase::Document->new($key);
+    $c->_session_cb_bucket_handle->get($doc);
+    unless ($doc->is_ok) {
+        $doc = Couchbase::Document->new( $key, {} );
+    }
+    $doc->value->{$type} = $data;
+    $doc->expiry($expiry);
     $c->_session_cb_bucket_handle->upsert($doc);
     unless ($doc->is_ok) {
         Catalyst::Exception->throw(
@@ -141,12 +145,13 @@ sub delete_session_data {
     my ($c, $key) = @_;
     $c->log->debug("Couchbase session store: delete_session_data($key)") if $c->debug;
     croak("No cache key specified") unless length($key);
+    my ( $type, $id ) = split( ':', $key );
 
-    $key = $c->_session_couchbase_prefix . $key;
+    $key = $c->_session_couchbase_prefix . $id;
 
     my $doc = Couchbase::Document->new($key);
     $c->_session_cb_bucket_handle->remove($doc);
-    return ( $doc->is_ok );
+    return 1;
 }
 
 # Not required as Couchbase expires things itself.
