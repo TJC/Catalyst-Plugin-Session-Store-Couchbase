@@ -6,9 +6,6 @@ use Test::More tests => 8;
 
 use_ok('Catalyst::Plugin::Session::Store::Couchbase');
 
-my $uri = ( $ENV{'COUCHBASE_TEST_HOST'} or 'localhost' );
-my $db = ( $ENV{'COUCHBASE_TEST_BUCKET'} or 'app_session' );
-
 ok(
 	my $s = Catalyst::Plugin::Session::Store::Couchbase->new(),
 	'new'
@@ -63,10 +60,6 @@ sub test__build_couchbase_url {
 		(not $response),
 		'_build_couchbase_url - ssl without certpath - empty response'
 	);
-}
-
-if ( $ENV{'COUCHBASE_LIVE_TEST'} ) {
-
 }
 
 done_testing();
